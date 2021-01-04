@@ -8,7 +8,7 @@
 #include <unordered_map>
 #include <vector>
 
-constexpr auto maxNumThreads = 100;
+constexpr auto numThreads = 4;
 
 struct Runner {
 
@@ -20,27 +20,31 @@ struct Runner {
   std::string const rootDir;
 
   explicit Runner(std::string const &root) : rootDir(root) {
-    threads.reserve(maxNumThreads);
+    threads.reserve(numThreads);
     namespace fs = std::filesystem;
 
     std::ios_base::sync_with_stdio(false);
+    std::array<std::pair<std::vector<std::string>, std::vector<std::string>>, numThreads> cmds{};
+    std::size_t ncmd = 0;
+
     for (const auto &entry : fs::recursive_directory_iterator(rootDir)) {
       ++amount;
       auto const path = entry.path().string();
       auto const cmd = (std::string("pacman -Qo ") + path +
                         std::string(">>/dev/null 2>>/dev/null")); // 0 gut,
-      threads.emplace_back(&Runner::insert, std::move(cmd), std::move(path),
-                           rootDir, &mutex, &good, &bad);
+      cmds.at(ncmd).first.emplace_back(std::move(cmd));
+      cmds.at(ncmd).second.emplace_back(std::move(path));
 
-      if (threads.size() > 40) {
-        for (auto &t : threads) { t.join(); }
-        threads.clear();
-      }
-
-      //std::cout << amount << std::endl;
-      if (!(amount % 500)) std::cout << amount << std::endl;
-      if (amount > 50) break;
+      if (++ncmd == numThreads) ncmd = 0;
+      if (amount > 1000) break; // XXX
     }
+    std::cout << "starting" << std::endl;
+
+    for (auto const &cmd : cmds) {
+      threads.emplace_back(&Runner::insertMultiple, std::move(cmd.first),
+                           std::move(cmd.second), rootDir, &mutex, &good, &bad);
+    }
+
     for (auto &t : threads) { t.join(); }
     threads.clear();
     std::cout << amount << " files processed." << std::endl;
@@ -88,13 +92,38 @@ struct Runner {
     //std::cout << (name) << std::endl; 
   }
 
-  static void insert(std::string &&k, std::string &&name,
+  static void insert(std::string &&command, std::string &&name,
                      std::string const &root, std::mutex *mut, Map *good,
                      Map *bad) {
-    auto const ex = WEXITSTATUS(std::system(k.c_str()));
+    auto const ex = WEXITSTATUS(std::system(command.c_str()));
 
     std::lock_guard<std::mutex> const lock{*mut};
     insertToTree(std::move(name), root, ex ? bad : good);
+  }
+
+  static void insertMultiple(std::vector<std::string> &&commands,
+                             std::vector<std::string> &&names,
+                             std::string const &root, std::mutex *mut,
+                             Map *good, Map *bad) {
+
+    assert(commands.size() == names.size());
+    for (std::size_t s = 0; s < commands.size(); ++s) {
+
+      auto const ex = WEXITSTATUS(std::system(commands.at(s).c_str()));
+      std::lock_guard<std::mutex> const lock{*mut};
+      insertToTree(std::move(names.at(s)), root, ex ? bad : good);
+    }
+  }
+
+  static void insertMultipleOneCall(std::string &&command,
+                                    std::vector<std::string> &&names,
+                                    std::string const &root, std::mutex *mut,
+                                    Map *good, Map *bad) {
+    // XXX
+
+    //auto const ex = WEXITSTATUS(std::system(commands.at(s).c_str()));
+    //std::lock_guard<std::mutex> const lock{*mut};
+    //insertToTree(std::move(names.at(s)), root, ex ? bad : good);
   }
 
   std::size_t amount{0};
